@@ -324,21 +324,18 @@ def exact_match(l2, references, outputs, ids, LOG):
 		op.write(f"Exact-Match Accuracy: {(correct + correctl) / (correct + correctl + wrong + wrongl)}\n")
 
 def comet(l2, sources, outputs, references, LOG):
-	from comet.models import download_model
-	model = download_model("wmt-large-da-estimator-1719", "comet_models/")
-	#references = [references
+	from comet.models import download_model, load_from_checkpoint
+	model_path = download_model("Unbabel/wmt22-comet-da")
+	model = load_from_checkpoint(model_path)
+
 	data = {"src": sources, "mt": outputs, "ref": references}
-	print(data['src'][:10])
-	print(data['mt'][:10])
-	print(data['ref'][:10])
 	data = [dict(zip(data, t)) for t in zip(*data.values())]
-	temp = model.predict(data, cuda=False, show_progress=True)
-	comet_score = np.mean(temp[1])
-	print(f"All comment values: {temp[1]}\n")
-	print(f"COMET score: {comet_score}\n")
+
+	model_output = model.predict(data, batch_size=8, gpus=1)
+                                
+	print(f"COMET score: {model_output.system_score}\n")
 	with open(LOG, 'a') as op:
-		op.write(f"All comment values: {temp[1]}\n")
-		op.write(f"COMET score: {comet_score}\n")
+		op.write(f"COMET score: {model_output.system_score}\n")
 
 
 def bleu(l2, references, outputs, LOG):
@@ -441,4 +438,4 @@ if l2 != "en":
 	if args.MOD_TER == "True":
 		mod_ter_w_shift(l2, exactreferences, outputs, sentreferences, ids, 2, [], LOG)
 	if args.TER == "True":
-		ter_w_shift(l2, sentreferences, outputs)
+		ter_w_shift(l2, sentreferences, outputs, [], LOG)
