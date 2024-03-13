@@ -8,6 +8,15 @@ import TER_modified
 from bs4 import BeautifulSoup
 import numpy as np
 
+def tokenize_and_truecase(sentence):
+	doc_f = l2_stanza(sentence)
+	sentence_words = [w for w in doc_f.sentences[0].words]
+	first_non_punct_index = [i for i, word in enumerate(sentence_words) if word.upos != "PUNCT"][0]
+	sentence_surfaces = [w.text for w in sentence_words]
+	if sentence_words[first_non_punct_index].lemma[0].islower():
+		sentence_surfaces[first_non_punct_index] = sentence_surfaces[first_non_punct_index][0].lower() + sentence_surfaces[first_non_punct_index][1:]
+	return " ".join(sentence_surfaces)
+
 
 def read_reference_data_wmt(lt, ls):
 	with open(lt, encoding="utf-8") as inp:
@@ -31,6 +40,11 @@ def read_reference_data_wmt(lt, ls):
 
 			source = " " + " ".join(source_tokens) + " "
 			target = " " + " ".join(target_tokens) + " "
+            
+            # if stanza supported, tokenize and truecase target with stanza
+			if SUPPORTED:
+				target = " " + tokenize_and_truecase(target) + " "
+
 			sources.append(source)
 			outputs.append(target)
 
@@ -66,6 +80,8 @@ def read_reference_data_wmt(lt, ls):
 						doc_f = l2_stanza(tgt_terms[ids].text)
 						tgt_lemma = ' ' + ' '.join([w.lemma for w in doc_f.sentences[0].words]) + ' '
 						terms_l.append(f"{src_terms[ids].text} ||| {src_ids} --> {tgt_lemma} ||| {tgt_ids}")
+                        
+
 			refs[id] = (source, target, terms, terms_l, mod_terms)
 
 	return sources, outputs, refs
@@ -79,7 +95,10 @@ def read_outputs_wmt(f):
 		if "</seg>" in line:
 			soup = BeautifulSoup(line, "lxml")
 			ids.append(soup.seg['id'])
-			outputs.append(' ' + ' '.join(soup.seg.text.strip().split()) + ' ')
+			output = ' ' + ' '.join(soup.seg.text.strip().split()) + ' '
+			if SUPPORTED:
+				output = " " + tokenize_and_truecase(output) + " "
+			outputs.append(output)
 	return ids, outputs
 
 
@@ -90,7 +109,8 @@ def compare_EXACT(hyp, ref):
 	if SUPPORTED:
 		doc_f = l2_stanza(hyp)
 		try:
-			hyp_l = ' ' + ' '.join([w.lemma for w in doc_f.sentences[0].words]) + ' '
+			# The hash sign is a used as compound marker in stanza lemma output, remove it
+			hyp_l = ' ' + ' '.join([w.lemma.replace("#","") for w in doc_f.sentences[0].words]) + ' '
 		except:
 			hyp_l = ""
 
@@ -98,7 +118,7 @@ def compare_EXACT(hyp, ref):
 	count_wrong = 0
 	count_correct_l = 0
 	count_wrong_l = 0
-
+	terms_regexes = []
 	starts = []
 	for t in terms:
 		t = t.split(' --> ')
@@ -107,7 +127,7 @@ def compare_EXACT(hyp, ref):
 		for item in t[0].split("|"):
 			desired_list.append("(?= " + item + " )")
 		desireds = "|".join(desired_list)
-
+		terms_regexes.append(desireds)
 		flag = False
 		for desired in desireds.split("|"):
 			desired_starts = [m.start() for m in re.finditer(desired, hyp)]
@@ -132,7 +152,7 @@ def compare_EXACT(hyp, ref):
 		else:
 			count_correct += 1
 
-	return count_correct, count_wrong, count_correct_l, count_wrong_l
+	return count_correct, count_wrong, count_correct_l, count_wrong_l, hyp_l, terms_regexes
 
 def compare_TER_w(hyp, ref, lc):
 	source, reference, terms, terms_l, _ = ref
@@ -164,9 +184,11 @@ def compare_exact_window_overlap(hyp, ref, window):
 	matched = 0
 
 	hyp_tokens = hyp.strip().split()
+	print(hyp_tokens)
 	if not hyp_tokens:
 		return 0.0
 	reference_tokens = reference.strip().split()
+	print(reference_tokens)
 	desireds = {}
 	for t in terms:
 		t = t.split(' --> ')
@@ -177,19 +199,20 @@ def compare_exact_window_overlap(hyp, ref, window):
 			desireds[desired].append(desiredindxs)
 		else:
 			desireds[desired] = [desiredindxs]
+	print(desireds)
 	for desired in desireds:
 		fts = [m.start() for m in re.finditer(f"(?={desired})", hyp)]
 		accs = {}
 		for j, listfs in enumerate(desireds[desired]):
 			ref_words = []
 			for win in range(min(listfs) - 1, -1, -1):
-				if reference_tokens[win] not in string.punctuation:
+				if 0 <= win < len(reference_tokens) and reference_tokens[win] not in string.punctuation:
 					ref_words.append(reference_tokens[win])
 					if len(ref_words) == window:
 						break
 			ref_wordsr = []
 			for win in range(max(listfs) + 1, len(reference_tokens), 1):
-				if reference_tokens[win] not in string.punctuation:
+				if 0 <= win < len(reference_tokens) and reference_tokens[win] not in string.punctuation:
 					ref_wordsr.append(reference_tokens[win])
 					if len(ref_wordsr) == window:
 						break
@@ -296,18 +319,20 @@ def compare_exact_window_overlap(hyp, ref, window):
 
 
 
-def exact_match(l2, references, outputs, ids, LOG):
+def exact_match(l2, references, outputs, ids, LOG, match_counts_path):
 	correct = 0
 	wrong = 0
 	correctl = 0
 	wrongl = 0
-	for i, id in enumerate(ids):
-		if id in references:
-			c, w, cl, wl = compare_EXACT(outputs[i], references[id])
-			correct += c
-			wrong += w
-			correctl += cl
-			wrongl += wl
+	with open(match_counts_path,'w') as match_counts_file:
+		for i, id in enumerate(ids):
+			if id in references:
+				c, w, cl, wl, hyp_l, terms_regexes = compare_EXACT(outputs[i], references[id])
+				match_counts_file.write(f'{id}\t{outputs[i]}\t{hyp_l}\t{",".join(terms_regexes)}\tC{c}\tW{w}\tCL{cl}\n')
+				correct += c
+				wrong += w
+				correctl += cl
+				wrongl += wl 
 
 	print(f"Exact-Match Statistics")
 	print(f"\tTotal correct: {correct}")
@@ -325,7 +350,7 @@ def exact_match(l2, references, outputs, ids, LOG):
 
 def comet(l2, sources, outputs, references, LOG):
 	from comet.models import download_model, load_from_checkpoint
-	model_path = download_model("Unbabel/wmt22-comet-da")
+	model_path = download_model("Unbabel/wmt22-comet-da",saving_directory="../comet_models")
 	model = load_from_checkpoint(model_path)
 
 	data = {"src": sources, "mt": outputs, "ref": references}
@@ -394,6 +419,7 @@ parser.add_argument("--hypothesis", help="hypothesis file", type=str, default=""
 parser.add_argument("--source", help="directory where source side sgm file is located", type=str, default="")
 parser.add_argument("--target_reference", help="directory where target side sgm file is located", type=str, default="")
 parser.add_argument("--log", help="to write all outputs", type=str, default="")
+parser.add_argument("--match_counts_path", help="Output file for all match counts per line", type=str, default="")
 parser.add_argument("--BLEU", help="", type=str, default="True")
 parser.add_argument("--COMET", help="", type=str, default="False")
 parser.add_argument("--EXACT_MATCH", help="", type=str, default="True")
@@ -410,7 +436,8 @@ LOG = args.log
 SUPPORTED = False
 try:
 	stanza.download(l2, processors='tokenize,pos,lemma,depparse')
-	l2_stanza = stanza.Pipeline(processors='tokenize,pos,lemma,depparse', lang=l2, use_gpu=True, tokenize_pretokenized=True)
+	# switched pretokenized to False, since using SentencePiece.
+	l2_stanza = stanza.Pipeline(processors='tokenize,pos,lemma,depparse', lang=l2, use_gpu=True, tokenize_pretokenized=False)
 	SUPPORTED = True
 except:
 	print(f"Language {l2} does not seem to be supported by Stanza -- or something went wrong with downloading the models.")
@@ -425,7 +452,7 @@ if l2 != "en":
 	if args.COMET == "True":
 		comet(l2, sources, outputs, sentreferences, LOG)
 	if args.EXACT_MATCH == "True":
-		exact_match(l2, exactreferences, outputs, ids, LOG)
+		exact_match(l2, exactreferences, outputs, ids, LOG, args.match_counts_path)
 	if args.WINDOW_OVERLAP == "True":
 		print("Window Overlap Accuracy :")
 		with open(LOG, 'a') as op:
