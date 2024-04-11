@@ -10,12 +10,19 @@ import numpy as np
 
 def tokenize_and_truecase(sentence):
 	doc_f = l2_stanza(sentence)
-	sentence_words = [w for w in doc_f.sentences[0].words]
-	first_non_punct_index = [i for i, word in enumerate(sentence_words) if word.upos != "PUNCT"][0]
-	sentence_surfaces = [w.text for w in sentence_words]
-	if sentence_words[first_non_punct_index].lemma[0].islower():
-		sentence_surfaces[first_non_punct_index] = sentence_surfaces[first_non_punct_index][0].lower() + sentence_surfaces[first_non_punct_index][1:]
-	return " ".join(sentence_surfaces)
+	all_sentence_surfaces = []
+	for sentence in doc_f.sentences:
+		sentence_words = [w for w in sentence.words]
+		non_punct_indices = [i for i, word in enumerate(sentence_words) if word.upos != "PUNCT"]
+		sentence_surfaces = [w.text for w in sentence_words]
+		if non_punct_indices:
+			if sentence_words[non_punct_indices[0]].lemma[0].islower():
+				sentence_surfaces[non_punct_indices[0]] = sentence_surfaces[non_punct_indices[0]][0].lower() + sentence_surfaces[non_punct_indices[0]][1:]
+		else:
+			print("no non-punct found: " + " ".join(sentence_surfaces))
+		all_sentence_surfaces = all_sentence_surfaces + sentence_surfaces
+
+	return " ".join(all_sentence_surfaces)
 
 
 def read_reference_data_wmt(lt, ls):
@@ -108,11 +115,13 @@ def compare_EXACT(hyp, ref):
 
 	if SUPPORTED:
 		doc_f = l2_stanza(hyp)
-		try:
-			# The hash sign is a used as compound marker in stanza lemma output, remove it
-			hyp_l = ' ' + ' '.join([w.lemma.replace("#","") for w in doc_f.sentences[0].words]) + ' '
-		except:
-			hyp_l = ""
+		hyp_l = ' '
+		for sentence in doc_f.sentences:
+			try:
+				# The hash sign is a used as compound marker in stanza lemma output, remove it
+				hyp_l = hyp_l  + ' '.join([w.lemma.replace("#","") for w in sentence.words]) + ' '
+			except:
+				hyp_l = hyp_l
 
 	count_correct = 0
 	count_wrong = 0
@@ -166,9 +175,13 @@ def compare_TER_w(hyp, ref, lc):
 	term_l_ids = []
 	if terms_l and SUPPORTED:
 		doc_f = l2_stanza(hyp)
-		hyp_l = ' ' + ' '.join([w.lemma for w in doc_f.sentences[0].words]) + ' '
+		hyp_l = ' '
+		for sentence in doc_f.sentences:
+			hyp_l = hyp_l + ' '.join([w.lemma for w in sentence.words]) + ' '
 		doc_f = l2_stanza(reference)
-		reference_l = ' ' + ' '.join([w.lemma for w in doc_f.sentences[0].words]) + ' '
+		reference_l = ' '
+		for sentence in doc_f.sentences:
+			reference_l = reference_l + ' '.join([w.lemma for w in sentence.words]) + ' '
 		for t in terms_l:
 			t = t.split(' --> ')
 			t = t[1].split(' ||| ')
@@ -184,11 +197,9 @@ def compare_exact_window_overlap(hyp, ref, window):
 	matched = 0
 
 	hyp_tokens = hyp.strip().split()
-	print(hyp_tokens)
 	if not hyp_tokens:
 		return 0.0
 	reference_tokens = reference.strip().split()
-	print(reference_tokens)
 	desireds = {}
 	for t in terms:
 		t = t.split(' --> ')
@@ -199,7 +210,6 @@ def compare_exact_window_overlap(hyp, ref, window):
 			desireds[desired].append(desiredindxs)
 		else:
 			desireds[desired] = [desiredindxs]
-	print(desireds)
 	for desired in desireds:
 		fts = [m.start() for m in re.finditer(f"(?={desired})", hyp)]
 		accs = {}
@@ -251,9 +261,13 @@ def compare_exact_window_overlap(hyp, ref, window):
 	
 	if SUPPORTED and terms_l:
 		doc_f = l2_stanza(hyp)
-		hyp = ' ' + ' '.join([w.lemma for w in doc_f.sentences[0].words]) + ' '
+		hyp_l = ' '
+		for sentence in doc_f.sentences:
+			hyp_l = hyp_l + ' '.join([w.lemma for w in sentence.words]) + ' '
 		doc_f = l2_stanza(reference)
-		reference = ' ' + ' '.join([w.lemma for w in doc_f.sentences[0].words]) + ' '
+		reference_l = ' '
+		for sentence in doc_f.sentences:
+			reference_l = reference_l + ' '.join([w.lemma for w in sentence.words]) + ' '
 		hyp_tokens = hyp.strip().split()
 		reference_tokens = reference.strip().split()
 		desireds = {}
@@ -348,10 +362,10 @@ def exact_match(l2, references, outputs, ids, LOG, match_counts_path):
 		op.write(f"\tTotal wrong (lemma): {wrongl}\n")
 		op.write(f"Exact-Match Accuracy: {(correct + correctl) / (correct + correctl + wrong + wrongl)}\n")
 
-def comet(l2, sources, outputs, references, LOG):
+def comet(l2, sources, outputs, references, comet_model_path, LOG):
 	from comet.models import download_model, load_from_checkpoint
-	model_path = download_model("Unbabel/wmt22-comet-da",saving_directory="../comet_models")
-	model = load_from_checkpoint(model_path)
+	#model_path = download_model("Unbabel/wmt22-comet-da",saving_directory="../comet_models")
+	model = load_from_checkpoint(comet_model_path)
 
 	data = {"src": sources, "mt": outputs, "ref": references}
 	data = [dict(zip(data, t)) for t in zip(*data.values())]
@@ -396,7 +410,7 @@ def mod_ter_w_shift(l2, references, outputs, nonreferences, ids, lc, IDS_to_excl
 		
 	print(f"1 - TERm Score: {1 - (ter / len(ids))}")
 	with open(LOG, 'a') as op:
-		op.write(f"1 - TER Score: {1 - (ter / len(ids))}\n")
+		op.write(f"1 - TERm Score: {1 - (ter / len(ids))}\n")
 
 
 def exact_window_overlap_match(l2, references, outputs, ids, window, LOG):
@@ -420,6 +434,7 @@ parser.add_argument("--source", help="directory where source side sgm file is lo
 parser.add_argument("--target_reference", help="directory where target side sgm file is located", type=str, default="")
 parser.add_argument("--log", help="to write all outputs", type=str, default="")
 parser.add_argument("--match_counts_path", help="Output file for all match counts per line", type=str, default="")
+parser.add_argument("--comet_model_path", help="Path to COMET model to use", type=str, default="")
 parser.add_argument("--BLEU", help="", type=str, default="True")
 parser.add_argument("--COMET", help="", type=str, default="False")
 parser.add_argument("--EXACT_MATCH", help="", type=str, default="True")
@@ -445,24 +460,25 @@ except:
 	SUPPORTED = False
 
 ids, outputs = read_outputs_wmt(args.hypothesis)
-if l2 != "en":
-	sources, sentreferences, exactreferences = read_reference_data_wmt(args.target_reference, args.source)
-	if args.BLEU == "True":
-		bleu(l2, sentreferences, outputs, LOG)
-	if args.COMET == "True":
-		comet(l2, sources, outputs, sentreferences, LOG)
-	if args.EXACT_MATCH == "True":
-		exact_match(l2, exactreferences, outputs, ids, LOG, args.match_counts_path)
-	if args.WINDOW_OVERLAP == "True":
-		print("Window Overlap Accuracy :")
-		with open(LOG, 'a') as op:
-			op.write("Window Overlap Accuracy :\n")
-		for window in windows:
-			print(f"\tWindow {window}:")
-			with open(LOG, 'a') as op:
-				op.write("Window Overlap Accuracy :\n")
-			exact_window_overlap_match(l2, exactreferences, outputs, ids, window, LOG)
-	if args.MOD_TER == "True":
-		mod_ter_w_shift(l2, exactreferences, outputs, sentreferences, ids, 2, [], LOG)
-	if args.TER == "True":
-		ter_w_shift(l2, sentreferences, outputs, [], LOG)
+# Why not en?
+#if l2 != "en":
+sources, sentreferences, exactreferences = read_reference_data_wmt(args.target_reference, args.source)
+if args.BLEU == "True":
+    bleu(l2, sentreferences, outputs, LOG)
+if args.COMET == "True":
+    comet(l2, sources, outputs, sentreferences, args.comet_model_path, LOG)
+if args.EXACT_MATCH == "True":
+    exact_match(l2, exactreferences, outputs, ids, LOG, args.match_counts_path)
+if args.WINDOW_OVERLAP == "True":
+    print("Window Overlap Accuracy :")
+    with open(LOG, 'a') as op:
+        op.write("Window Overlap Accuracy:\n")
+    for window in windows:
+        print(f"\tWindow {window}:")
+        with open(LOG, 'a') as op:
+            op.write("Window Overlap Accuracy {window}:\n")
+        exact_window_overlap_match(l2, exactreferences, outputs, ids, window, LOG)
+if args.MOD_TER == "True":
+    mod_ter_w_shift(l2, exactreferences, outputs, sentreferences, ids, 2, [], LOG)
+if args.TER == "True":
+    ter_w_shift(l2, sentreferences, outputs, [], LOG)
